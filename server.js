@@ -129,6 +129,95 @@ app.post('/api/admin/command', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Setup codes ───────────────────────────────────────────────────────────────
+// codes: Map<code, { email, config, createdAt, used }>
+const setupCodes = new Map();
+
+function generateCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = 'TW-';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+// POST /api/setup/generate — website calls this after user completes setup
+app.post('/api/setup/generate', requireWebsite, (req, res) => {
+  const { email, llmBaseUrl, llmApiKey, llmModel, botToken, chatId } = req.body;
+  if (!email) return res.status(400).json({ error: 'email required' });
+
+  // Expire old codes for this email
+  for (const [k, v] of setupCodes.entries()) {
+    if (v.email === email.toLowerCase()) setupCodes.delete(k);
+  }
+
+  const code = generateCode();
+  setupCodes.set(code, {
+    email:      email.toLowerCase(),
+    llmBaseUrl: llmBaseUrl || 'https://api.groq.com/openai/v1',
+    llmApiKey:  llmApiKey  || '',
+    llmModel:   llmModel   || 'meta-llama/llama-4-scout-17b-16e-instruct',
+    botToken:   botToken   || '',
+    chatId:     chatId     || '',
+    createdAt:  Date.now(),
+    used:       false,
+  });
+
+  // Expire after 15 minutes
+  setTimeout(() => setupCodes.delete(code), 15 * 60 * 1000);
+
+  recordActivity(email, `Setup code generated: ${code}`, 'info');
+  res.json({ ok: true, code });
+});
+
+// POST /api/setup/redeem — app calls this with the code
+app.post('/api/setup/redeem', (req, res) => {
+  const code = (req.body.code || '').toUpperCase().trim();
+  if (!code) return res.status(400).json({ ok: false, error: 'code required' });
+
+  const entry = setupCodes.get(code);
+  if (!entry)       return res.status(404).json({ ok: false, error: 'Code not found or expired' });
+  if (entry.used)   return res.status(410).json({ ok: false, error: 'Code already used' });
+
+  entry.used = true;
+  recordActivity(entry.email, `Setup code redeemed by app`, 'success');
+
+  res.json({
+    ok:         true,
+    email:      entry.email,
+    llmBaseUrl: entry.llmBaseUrl,
+    llmApiKey:  entry.llmApiKey,
+    llmModel:   entry.llmModel,
+    botToken:   entry.botToken,
+    chatId:     entry.chatId,
+  });
+});
+
+// POST /api/admin/setup-code — admin generates a test code manually
+app.post('/api/admin/setup-code', requireAdmin, (req, res) => {
+  const { email, llmBaseUrl, llmApiKey, llmModel, botToken, chatId } = req.body;
+  if (!email) return res.status(400).json({ error: 'email required' });
+
+  for (const [k, v] of setupCodes.entries()) {
+    if (v.email === email.toLowerCase()) setupCodes.delete(k);
+  }
+
+  const code = generateCode();
+  setupCodes.set(code, {
+    email:      email.toLowerCase(),
+    llmBaseUrl: llmBaseUrl || 'https://api.groq.com/openai/v1',
+    llmApiKey:  llmApiKey  || '',
+    llmModel:   llmModel   || 'meta-llama/llama-4-scout-17b-16e-instruct',
+    botToken:   botToken   || '',
+    chatId:     chatId     || '',
+    createdAt:  Date.now(),
+    used:       false,
+  });
+
+  setTimeout(() => setupCodes.delete(code), 15 * 60 * 1000);
+  recordActivity(email, `Admin generated test code: ${code}`, 'warn');
+  res.json({ ok: true, code });
+});
+
 // ── Website relay API ─────────────────────────────────────────────────────────
 
 // POST /api/relay/token — website pushes a new token, we relay to agent
