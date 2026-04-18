@@ -1,0 +1,274 @@
+import { readFileSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import express from 'express';
+import { createServer } from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
+import cors from 'cors';
+import crypto from 'crypto';
+
+// Load .env manually
+const envPath = new URL('.env', import.meta.url).pathname;
+if (existsSync(envPath)) {
+  readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+    const [key, ...val] = line.trim().split('=');
+    if (key && !key.startsWith('#') && val.length) {
+      process.env[key.trim()] = val.join('=').trim();
+    }
+  });
+}
+
+const __dir = dirname(fileURLToPath(import.meta.url));
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const PORT           = process.env.PORT || 4000;
+const WEBSITE_SECRET = process.env.WEBSITE_SECRET || 'dev-website-secret';
+const ADMIN_SECRET   = process.env.ADMIN_SECRET   || 'dev-admin-secret';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
+  .split(',').map(s => s.trim());
+
+// ── In-memory store ───────────────────────────────────────────────────────────
+// agents: Map<email, AgentRecord>
+const agents = new Map();
+// activity: rolling buffer of last 500 events
+const activity = [];
+
+function recordActivity(email, text, level = 'info') {
+  const entry = { ts: Date.now(), email, text, level };
+  activity.unshift(entry);
+  if (activity.length > 500) activity.pop();
+  // broadcast to any open admin SSE connections
+  adminClients.forEach(res => sendSSE(res, 'activity', entry));
+}
+
+// Admin SSE clients (for real-time push to admin panel)
+const adminClients = new Set();
+function sendSSE(res, event, data) {
+  try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+}
+
+// ── Express ───────────────────────────────────────────────────────────────────
+const app = express();
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
+app.use(express.json());
+app.use(express.static(join(__dir, 'public')));
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+function requireWebsite(req, res, next) {
+  const auth = req.headers.authorization || '';
+  if (auth === `Bearer ${WEBSITE_SECRET}`) return next();
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
+function requireAdmin(req, res, next) {
+  const auth = req.headers.authorization || '';
+  if (auth === `Bearer ${ADMIN_SECRET}`) return next();
+  // also allow query param for browser SSE
+  if (req.query.secret === ADMIN_SECRET) return next();
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
+// ── Admin API ─────────────────────────────────────────────────────────────────
+
+// GET /api/admin/agents — list all known agents
+app.get('/api/admin/agents', requireAdmin, (req, res) => {
+  const list = [...agents.values()].map(a => ({
+    email:        a.email,
+    version:      a.version || '?',
+    online:       a.ws?.readyState === WebSocket.OPEN,
+    connectedAt:  a.connectedAt,
+    lastPing:     a.lastPing,
+    integrations: a.integrations || [],
+    agentId:      a.agentId,
+  }));
+  res.json({ agents: list, total: list.length, online: list.filter(a => a.online).length });
+});
+
+// GET /api/admin/activity — recent activity log
+app.get('/api/admin/activity', requireAdmin, (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '100'), 500);
+  res.json({ activity: activity.slice(0, limit) });
+});
+
+// GET /api/admin/stream — SSE stream for real-time updates
+app.get('/api/admin/stream', requireAdmin, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Send current state immediately
+  sendSSE(res, 'agents', [...agents.values()].map(a => ({
+    email: a.email, online: a.ws?.readyState === WebSocket.OPEN,
+    integrations: a.integrations || [], version: a.version,
+  })));
+
+  adminClients.add(res);
+  req.on('close', () => adminClients.delete(res));
+});
+
+// POST /api/admin/command — send a command to a specific agent
+app.post('/api/admin/command', requireAdmin, (req, res) => {
+  const { email, action, payload } = req.body;
+  if (!email || !action) return res.status(400).json({ error: 'email and action required' });
+
+  const agent = agents.get(email.toLowerCase());
+  if (!agent || agent.ws?.readyState !== WebSocket.OPEN) {
+    return res.status(404).json({ error: 'Agent not connected' });
+  }
+
+  wsSend(agent.ws, { type: 'command', action, payload });
+  recordActivity(email, `Admin sent command: ${action}`, 'warn');
+  res.json({ ok: true });
+});
+
+// ── Website relay API ─────────────────────────────────────────────────────────
+
+// POST /api/relay/token — website pushes a new token, we relay to agent
+app.post('/api/relay/token', requireWebsite, (req, res) => {
+  const { email, integrationId, token } = req.body;
+  if (!email || !integrationId) return res.status(400).json({ error: 'email and integrationId required' });
+
+  const normalEmail = email.toLowerCase();
+  const agent = agents.get(normalEmail);
+
+  // Push to agent if online
+  if (agent?.ws?.readyState === WebSocket.OPEN) {
+    wsSend(agent.ws, { type: 'token', integrationId, token: token || '' });
+    recordActivity(normalEmail, `Token pushed: ${integrationId}`, 'success');
+  } else {
+    recordActivity(normalEmail, `Token saved (agent offline): ${integrationId}`, 'info');
+  }
+
+  res.json({ ok: true, delivered: agent?.ws?.readyState === WebSocket.OPEN });
+});
+
+// POST /api/relay/activity — website or agent POSTs an activity event
+app.post('/api/relay/activity', requireWebsite, (req, res) => {
+  const { email, text, level } = req.body;
+  if (email && text) recordActivity(email, text, level || 'info');
+  res.json({ ok: true });
+});
+
+// GET /api/relay/agent-status — website checks if a user's agent is online
+app.get('/api/relay/agent-status', requireWebsite, (req, res) => {
+  const email = (req.query.email || '').toLowerCase();
+  const agent = agents.get(email);
+  res.json({
+    online: agent?.ws?.readyState === WebSocket.OPEN || false,
+    lastPing: agent?.lastPing || null,
+    version: agent?.version || null,
+    integrations: agent?.integrations || [],
+  });
+});
+
+// ── Health ────────────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => res.json({ ok: true, agents: agents.size }));
+
+// ── Admin panel (served from public/admin.html) ───────────────────────────────
+app.get('/admin', (req, res) => {
+  res.sendFile(join(__dir, 'public', 'admin.html'));
+});
+
+// ── HTTP + WebSocket server ───────────────────────────────────────────────────
+const server = createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+function wsSend(ws, obj) {
+  try {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  } catch {}
+}
+
+wss.on('connection', (ws, req) => {
+  let agentEmail = null;
+
+  ws.on('message', raw => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+
+    switch (msg.type) {
+
+      case 'register': {
+        const email = (msg.email || '').toLowerCase().trim();
+        if (!email) return;
+        agentEmail = email;
+
+        const existing = agents.get(email) || {};
+        agents.set(email, {
+          ...existing,
+          email,
+          ws,
+          agentId:      msg.agentId || crypto.randomUUID(),
+          version:      msg.version || '?',
+          connectedAt:  Date.now(),
+          lastPing:     Date.now(),
+          integrations: msg.integrations || existing.integrations || [],
+        });
+
+        wsSend(ws, { type: 'registered', agentId: agents.get(email).agentId });
+        recordActivity(email, `Agent connected (v${msg.version || '?'})`, 'success');
+
+        // Notify admin panel
+        adminClients.forEach(res => sendSSE(res, 'agent_online', {
+          email, version: msg.version, online: true, integrations: msg.integrations || [],
+        }));
+        break;
+      }
+
+      case 'ping': {
+        if (agentEmail && agents.has(agentEmail)) {
+          agents.get(agentEmail).lastPing = Date.now();
+        }
+        wsSend(ws, { type: 'pong' });
+        break;
+      }
+
+      case 'activity': {
+        if (agentEmail) {
+          recordActivity(agentEmail, msg.text || '', msg.level || 'info');
+        }
+        break;
+      }
+
+      case 'integrations_update': {
+        if (agentEmail && agents.has(agentEmail)) {
+          agents.get(agentEmail).integrations = msg.integrations || [];
+          adminClients.forEach(res => sendSSE(res, 'agent_update', {
+            email: agentEmail, integrations: msg.integrations,
+          }));
+        }
+        break;
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    if (agentEmail && agents.has(agentEmail)) {
+      agents.get(agentEmail).ws = null;
+      recordActivity(agentEmail, 'Agent disconnected', 'warn');
+      adminClients.forEach(res => sendSSE(res, 'agent_offline', { email: agentEmail }));
+    }
+  });
+
+  ws.on('error', () => {});
+});
+
+// Clean up dead connections every 60s
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (ws.readyState !== WebSocket.OPEN) ws.terminate();
+  });
+}, 60_000);
+
+server.listen(PORT, () => {
+  console.log(`Twain server running on port ${PORT}`);
+  console.log(`Admin panel: http://localhost:${PORT}/admin`);
+});

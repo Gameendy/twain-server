@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Twain Admin</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #080808; --sidebar: #0d0d0d; --surface: #111;
+      --surface2: #161616; --surface3: #1c1c1c;
+      --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12);
+      --green: #22c55e; --green-dim: rgba(34,197,94,0.08);
+      --red: #ef4444; --yellow: #fbbf24; --blue: #60a5fa;
+      --text: #fff; --muted: #666; --muted2: #999;
+    }
+    html, body { height: 100%; font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); }
+    body { display: flex; overflow: hidden; }
+
+    /* Login */
+    #loginScreen { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 999; }
+    .login-card { background: var(--surface); border: 1px solid var(--border2); border-radius: 20px; padding: 2rem; width: 340px; }
+    .login-card h1 { font-size: 1.3rem; font-weight: 800; margin-bottom: .25rem; }
+    .login-card p { font-size: 13px; color: var(--muted2); margin-bottom: 1.5rem; }
+    .login-inp { width: 100%; padding: 11px 14px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 10px; color: #fff; font-family: inherit; font-size: 14px; outline: none; margin-bottom: 12px; }
+    .login-inp:focus { border-color: rgba(34,197,94,0.4); }
+    .login-btn { width: 100%; padding: 12px; background: var(--green); color: #000; border: none; border-radius: 10px; font-family: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+
+    /* Sidebar */
+    .sidebar { width: 220px; flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100vh; }
+    .sidebar-logo { padding: 20px 18px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+    .sidebar-logo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: blink 2s infinite; }
+    .sidebar-logo span { font-size: 1rem; font-weight: 800; }
+    .sidebar-logo small { font-size: 10px; color: var(--green); font-weight: 700; letter-spacing: .5px; text-transform: uppercase; margin-left: auto; }
+    @keyframes blink { 0%,100%{opacity:1}50%{opacity:.3} }
+    .nav { padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--muted2); cursor: pointer; transition: all .15s; border: none; background: none; width: 100%; text-align: left; font-family: inherit; }
+    .nav-item:hover { background: var(--surface2); color: #fff; }
+    .nav-item.active { background: var(--surface); color: #fff; }
+    .nav-item svg { flex-shrink: 0; opacity: .6; }
+    .nav-item.active svg { opacity: 1; }
+    .sidebar-bottom { margin-top: auto; padding: 14px; border-top: 1px solid var(--border); }
+    .server-url { font-size: 11px; color: var(--muted); word-break: break-all; }
+
+    /* Main */
+    .main { flex: 1; overflow-y: auto; height: 100vh; }
+    .topbar { height: 52px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(8,8,8,.9); backdrop-filter: blur(10px); z-index: 10; }
+    .topbar-title { font-size: 14px; font-weight: 700; }
+    .topbar-right { display: flex; gap: 8px; align-items: center; }
+    .pill { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted2); padding: 4px 10px; border-radius: 20px; background: var(--surface); border: 1px solid var(--border2); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .dot.green { background: var(--green); box-shadow: 0 0 5px var(--green); animation: blink 2s infinite; }
+
+    /* Pages */
+    .page { display: none; padding: 24px; }
+    .page.active { display: block; }
+    .page-title { font-size: 1.4rem; font-weight: 800; letter-spacing: -.5px; margin-bottom: 6px; }
+    .page-sub { font-size: 13px; color: var(--muted2); margin-bottom: 24px; }
+
+    /* Stat tiles */
+    .stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-bottom: 24px; }
+    .stat { background: var(--surface); border: 1px solid var(--border2); border-radius: 14px; padding: 18px 20px; }
+    .stat-val { font-size: 1.8rem; font-weight: 800; letter-spacing: -.5px; }
+    .stat-lbl { font-size: 12px; color: var(--muted2); margin-top: 4px; }
+
+    /* Table */
+    .card { background: var(--surface); border: 1px solid var(--border2); border-radius: 16px; overflow: hidden; margin-bottom: 16px; }
+    .card-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .card-title { font-size: 13px; font-weight: 700; color: var(--green); letter-spacing: .3px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { padding: 10px 20px; text-align: left; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); }
+    td { padding: 13px 20px; font-size: 13px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    /* Status badge */
+    .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; }
+    .status.online { background: rgba(34,197,94,0.1); color: var(--green); border: 1px solid rgba(34,197,94,0.25); }
+    .status.offline { background: rgba(239,68,68,0.08); color: #f87171; border: 1px solid rgba(239,68,68,0.2); }
+    .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+    /* Integration chips */
+    .chip { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: var(--surface2); border: 1px solid var(--border2); color: var(--muted2); margin: 2px; }
+    .chip.connected { background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.2); color: var(--green); }
+
+    /* Activity log */
+    .activity-list { display: flex; flex-direction: column; }
+    .activity-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 20px; border-bottom: 1px solid var(--border); }
+    .activity-row:last-child { border: none; }
+    .a-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+    .a-dot.info { background: var(--blue); }
+    .a-dot.success { background: var(--green); }
+    .a-dot.warn { background: var(--yellow); }
+    .a-dot.error { background: var(--red); }
+    .a-email { font-size: 12px; font-weight: 600; color: var(--muted2); flex-shrink: 0; width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .a-text { font-size: 13px; color: #ccc; flex: 1; }
+    .a-time { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+    .empty { padding: 48px; text-align: center; color: var(--muted); font-size: 13px; }
+
+    /* Command panel */
+    .cmd-row { display: flex; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--border); }
+    .cmd-inp { flex: 1; background: var(--surface2); border: 1px solid var(--border2); border-radius: 9px; padding: 9px 13px; color: #fff; font-family: inherit; font-size: 13px; outline: none; }
+    .cmd-inp:focus { border-color: rgba(34,197,94,0.4); }
+    .cmd-btn { padding: 9px 18px; background: var(--green); color: #000; border: none; border-radius: 9px; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .cmd-select { background: var(--surface2); border: 1px solid var(--border2); border-radius: 9px; padding: 9px 12px; color: #fff; font-family: inherit; font-size: 13px; outline: none; }
+
+    /* Refresh btn */
+    .refresh-btn { padding: 5px 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 7px; color: var(--muted2); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s; }
+    .refresh-btn:hover { color: #fff; border-color: rgba(255,255,255,0.2); }
+  </style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="loginScreen">
+  <div class="login-card">
+    <h1>Twain Admin</h1>
+    <p>Enter your admin secret to continue.</p>
+    <input class="login-inp" type="password" id="secretInp" placeholder="Admin secret..." onkeydown="if(event.key==='Enter')login()">
+    <button class="login-btn" onclick="login()">Sign in</button>
+    <p id="loginErr" style="font-size:12px;color:#f87171;margin-top:10px;display:none">Wrong secret.</p>
+  </div>
+</div>
+
+<!-- App -->
+<div id="appShell" style="display:none;width:100%;display:flex">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-dot"></div>
+      <span>Twain</span>
+      <small>Admin</small>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" onclick="showPage('overview',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        Overview
+      </button>
+      <button class="nav-item" onclick="showPage('agents',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1" fill="currentColor"/></svg>
+        Agents
+      </button>
+      <button class="nav-item" onclick="showPage('activity',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Activity
+      </button>
+      <button class="nav-item" onclick="showPage('commands',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        Commands
+      </button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="server-url" id="serverUrlDisplay"></div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title" id="pageTitle">Overview</span>
+      <div class="topbar-right">
+        <div class="pill">
+          <div class="dot green"></div>
+          <span id="connectedCount">0</span> online
+        </div>
+        <button class="refresh-btn" onclick="loadAll()">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Overview -->
+    <div class="page active" id="page-overview">
+      <div class="page-title">Overview</div>
+      <div class="page-sub">Real-time status of all Twain agents.</div>
+      <div class="stats">
+        <div class="stat"><div class="stat-val" id="statTotal">0</div><div class="stat-lbl">Total agents</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--green)" id="statOnline">0</div><div class="stat-lbl">Online now</div></div>
+        <div class="stat"><div class="stat-val" id="statIntg">0</div><div class="stat-lbl">Integrations connected</div></div>
+        <div class="stat"><div class="stat-val" id="statActivity">0</div><div class="stat-lbl">Events today</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Live agents</span></div>
+        <div id="overviewTable"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Recent activity</span></div>
+        <div class="activity-list" id="overviewActivity"></div>
+      </div>
+    </div>
+
+    <!-- Agents -->
+    <div class="page" id="page-agents">
+      <div class="page-title">Agents</div>
+      <div class="page-sub">All users who have connected their local agent.</div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">All agents</span></div>
+        <div id="agentsTable"></div>
+      </div>
+    </div>
+
+    <!-- Activity -->
+    <div class="page" id="page-activity">
+      <div class="page-title">Activity Log</div>
+      <div class="page-sub">Every event from every agent — newest first.</div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Events (last 500)</span></div>
+        <div class="activity-list" id="activityList"></div>
+      </div>
+    </div>
+
+    <!-- Commands -->
+    <div class="page" id="page-commands">
+      <div class="page-title">Commands</div>
+      <div class="page-sub">Send a command to any connected agent.</div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Send command</span></div>
+        <div style="padding:20px;display:flex;flex-direction:column;gap:14px">
+          <div>
+            <label style="font-size:12px;font-weight:700;color:var(--muted2);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Target agent (email)</label>
+            <input class="cmd-inp" id="cmdEmail" placeholder="user@email.com">
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:700;color:var(--muted2);display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Action</label>
+            <select class="cmd-select" id="cmdAction">
+              <option value="ping">ping — check if alive</option>
+              <option value="restart">restart — restart the agent</option>
+              <option value="fetch_tokens">fetch_tokens — re-fetch all tokens from website</option>
+              <option value="status">status — report current status</option>
+            </select>
+          </div>
+          <div>
+            <button class="cmd-btn" onclick="sendCommand()">Send command</button>
+          </div>
+          <div id="cmdResult" style="font-size:13px;color:var(--muted2);display:none"></div>
+        </div>
+        <div class="card-header" style="border-top:1px solid var(--border);border-bottom:none"><span class="card-title">Command history</span></div>
+        <div class="activity-list" id="cmdHistory"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  const BASE = window.location.origin;
+  let SECRET = '';
+  let sseSource = null;
+  let agentData = [];
+  let activityData = [];
+  const cmdHistory = [];
+
+  // ── Login ──────────────────────────────────────────────────────────────────
+  function login() {
+    SECRET = document.getElementById('secretInp').value.trim();
+    if (!SECRET) return;
+    fetch(`${BASE}/api/admin/agents`, { headers: auth() })
+      .then(r => {
+        if (!r.ok) throw new Error();
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('appShell').style.display = 'flex';
+        document.getElementById('serverUrlDisplay').textContent = BASE;
+        loadAll();
+        connectSSE();
+        setInterval(loadAll, 30000);
+      })
+      .catch(() => {
+        document.getElementById('loginErr').style.display = 'block';
+        SECRET = '';
+      });
+  }
+
+  function auth() { return { 'Authorization': `Bearer ${SECRET}` }; }
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  const TITLES = { overview: 'Overview', agents: 'Agents', activity: 'Activity Log', commands: 'Commands' };
+  function showPage(id, btn) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+    document.getElementById('page-' + id).classList.add('active');
+    if (btn) btn.classList.add('active');
+    document.getElementById('pageTitle').textContent = TITLES[id] || id;
+  }
+
+  // ── Load data ──────────────────────────────────────────────────────────────
+  async function loadAll() {
+    try {
+      const [ar, acr] = await Promise.all([
+        fetch(`${BASE}/api/admin/agents`, { headers: auth() }).then(r => r.json()),
+        fetch(`${BASE}/api/admin/activity?limit=100`, { headers: auth() }).then(r => r.json()),
+      ]);
+      agentData = ar.agents || [];
+      activityData = acr.activity || [];
+      renderAll();
+    } catch {}
+  }
+
+  function renderAll() {
+    const online = agentData.filter(a => a.online).length;
+    const totalIntg = agentData.reduce((n, a) => n + (a.integrations?.length || 0), 0);
+    const today = new Date().setHours(0,0,0,0);
+    const todayEvents = activityData.filter(a => a.ts > today).length;
+
+    document.getElementById('statTotal').textContent = agentData.length;
+    document.getElementById('statOnline').textContent = online;
+    document.getElementById('statIntg').textContent = totalIntg;
+    document.getElementById('statActivity').textContent = todayEvents;
+    document.getElementById('connectedCount').textContent = online;
+
+    renderAgentTable('overviewTable', agentData.slice(0, 10));
+    renderAgentTable('agentsTable', agentData);
+    renderActivity('overviewActivity', activityData.slice(0, 8));
+    renderActivity('activityList', activityData);
+  }
+
+  function renderAgentTable(elId, data) {
+    const el = document.getElementById(elId);
+    if (!data.length) { el.innerHTML = '<div class="empty">No agents yet — users connect when they start their local agent.</div>'; return; }
+    el.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Status</th><th>Email</th><th>Version</th>
+          <th>Integrations</th><th>Connected</th><th>Last ping</th>
+        </tr></thead>
+        <tbody>
+          ${data.map(a => `
+            <tr>
+              <td><span class="status ${a.online ? 'online' : 'offline'}"><span class="status-dot"></span>${a.online ? 'Online' : 'Offline'}</span></td>
+              <td style="font-weight:600">${a.email}</td>
+              <td style="color:var(--muted2)">${a.version}</td>
+              <td>${(a.integrations || []).map(i => `<span class="chip connected">${i}</span>`).join('') || '<span style="color:var(--muted);font-size:12px">none</span>'}</td>
+              <td style="color:var(--muted2)">${a.connectedAt ? timeAgo(a.connectedAt) : '—'}</td>
+              <td style="color:var(--muted2)">${a.lastPing ? timeAgo(a.lastPing) : '—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function renderActivity(elId, data) {
+    const el = document.getElementById(elId);
+    if (!data.length) { el.innerHTML = '<div class="empty">No activity yet.</div>'; return; }
+    el.innerHTML = data.map(a => `
+      <div class="activity-row">
+        <div class="a-dot ${a.level || 'info'}"></div>
+        <div class="a-email">${a.email || '—'}</div>
+        <div class="a-text">${a.text}</div>
+        <div class="a-time">${timeAgo(a.ts)}</div>
+      </div>`).join('');
+  }
+
+  // ── SSE real-time ──────────────────────────────────────────────────────────
+  function connectSSE() {
+    if (sseSource) sseSource.close();
+    sseSource = new EventSource(`${BASE}/api/admin/stream?secret=${encodeURIComponent(SECRET)}`);
+
+    sseSource.addEventListener('agent_online', e => {
+      const d = JSON.parse(e.data);
+      const existing = agentData.find(a => a.email === d.email);
+      if (existing) { Object.assign(existing, d, { online: true }); }
+      else { agentData.unshift({ ...d, online: true }); }
+      renderAll();
+    });
+
+    sseSource.addEventListener('agent_offline', e => {
+      const d = JSON.parse(e.data);
+      const a = agentData.find(x => x.email === d.email);
+      if (a) a.online = false;
+      renderAll();
+    });
+
+    sseSource.addEventListener('activity', e => {
+      activityData.unshift(JSON.parse(e.data));
+      if (activityData.length > 500) activityData.pop();
+      renderAll();
+    });
+
+    sseSource.addEventListener('agent_update', e => {
+      const d = JSON.parse(e.data);
+      const a = agentData.find(x => x.email === d.email);
+      if (a) Object.assign(a, d);
+      renderAll();
+    });
+
+    sseSource.onerror = () => setTimeout(connectSSE, 5000);
+  }
+
+  // ── Commands ───────────────────────────────────────────────────────────────
+  async function sendCommand() {
+    const email  = document.getElementById('cmdEmail').value.trim();
+    const action = document.getElementById('cmdAction').value;
+    const result = document.getElementById('cmdResult');
+    if (!email) { result.style.display='block'; result.textContent='Enter an email.'; result.style.color='#f87171'; return; }
+
+    try {
+      const res = await fetch(`${BASE}/api/admin/command`, {
+        method: 'POST',
+        headers: { ...auth(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, action }),
+      });
+      const data = await res.json();
+      result.style.display = 'block';
+      if (res.ok) {
+        result.textContent = `Command "${action}" sent to ${email}`;
+        result.style.color = 'var(--green)';
+        cmdHistory.unshift({ ts: Date.now(), email, text: `Command sent: ${action}`, level: 'warn' });
+        renderActivity('cmdHistory', cmdHistory);
+      } else {
+        result.textContent = data.error || 'Failed';
+        result.style.color = '#f87171';
+      }
+    } catch {
+      result.style.display = 'block';
+      result.textContent = 'Request failed';
+      result.style.color = '#f87171';
+    }
+  }
+
+  // ── Utils ──────────────────────────────────────────────────────────────────
+  function timeAgo(ts) {
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 5)  return 'just now';
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s/60)}m ago`;
+    if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+    return new Date(ts).toLocaleDateString();
+  }
+</script>
+</body>
+</html>
