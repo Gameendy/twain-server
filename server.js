@@ -131,7 +131,33 @@ app.post('/api/admin/command', requireAdmin, (req, res) => {
 
 // ── Setup codes ───────────────────────────────────────────────────────────────
 // setupCodes: Map<code, { email, config, createdAt, used }>
-const setupCodes = new Map();
+// Persisted to disk so codes survive server restarts/sleeps
+import { writeFileSync } from 'fs';
+const CODES_FILE = join(__dir, 'setup-codes.json');
+
+function loadCodes() {
+  try {
+    const raw = readFileSync(CODES_FILE, 'utf8');
+    const obj = JSON.parse(raw);
+    const now = Date.now();
+    const m = new Map();
+    for (const [k, v] of Object.entries(obj)) {
+      // Drop entries older than 24 hours or already used
+      if (!v.used && now - v.createdAt < 24 * 60 * 60 * 1000) m.set(k, v);
+    }
+    return m;
+  } catch { return new Map(); }
+}
+
+function saveCodes() {
+  try {
+    const obj = {};
+    for (const [k, v] of setupCodes.entries()) obj[k] = v;
+    writeFileSync(CODES_FILE, JSON.stringify(obj), 'utf8');
+  } catch {}
+}
+
+const setupCodes = loadCodes();
 // chatTokens: Map<chatCode, email>  — permanent, used for mobile web chat
 const chatTokens = new Map();
 
@@ -165,9 +191,10 @@ app.post('/api/setup/generate', requireWebsite, (req, res) => {
     createdAt:  Date.now(),
     used:       false,
   });
+  saveCodes();
 
   // Setup code expires after 24 hours (user may need time to install the app)
-  setTimeout(() => setupCodes.delete(code), 24 * 60 * 60 * 1000);
+  setTimeout(() => { setupCodes.delete(code); saveCodes(); }, 24 * 60 * 60 * 1000);
 
   // Also issue a persistent chat token for this email (overwrite old one)
   let chatCode = null;
@@ -193,6 +220,7 @@ app.post('/api/setup/redeem', (req, res) => {
   if (entry.used)   return res.status(410).json({ ok: false, error: 'Code already used' });
 
   entry.used = true;
+  saveCodes();
   recordActivity(entry.email, `Setup code redeemed by app`, 'success');
 
   res.json({
@@ -226,8 +254,9 @@ app.post('/api/admin/setup-code', requireAdmin, (req, res) => {
     createdAt:  Date.now(),
     used:       false,
   });
+  saveCodes();
 
-  setTimeout(() => setupCodes.delete(code), 24 * 60 * 60 * 1000);
+  setTimeout(() => { setupCodes.delete(code); saveCodes(); }, 24 * 60 * 60 * 1000);
   recordActivity(email, `Admin generated test code: ${code}`, 'warn');
   res.json({ ok: true, code });
 });
@@ -241,6 +270,7 @@ const pendingChats = new Map();
 app.post('/api/relay/chat', requireWebsite, async (req, res) => {
   const { email, message, sessionId } = req.body;
   if (!email || !message) return res.status(400).json({ error: 'email and message required' });
+  if (typeof message !== 'string' || message.length > 4000) return res.status(400).json({ error: 'message too long' });
 
   const agent = agents.get(email.toLowerCase());
   if (!agent?.ws || agent.ws.readyState !== WebSocket.OPEN) {
@@ -295,6 +325,7 @@ app.post('/api/relay/activity', requireWebsite, (req, res) => {
 app.post('/api/relay/chat-by-code', async (req, res) => {
   const { code, message, sessionId } = req.body;
   if (!code || !message) return res.status(400).json({ error: 'code and message required' });
+  if (typeof message !== 'string' || message.length > 4000) return res.status(400).json({ error: 'message too long' });
 
   const email = chatTokens.get(code.toUpperCase().trim());
   if (!email) return res.status(404).json({ error: 'Invalid code', invalid: true });
