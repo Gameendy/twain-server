@@ -130,8 +130,10 @@ app.post('/api/admin/command', requireAdmin, (req, res) => {
 });
 
 // ── Setup codes ───────────────────────────────────────────────────────────────
-// codes: Map<code, { email, config, createdAt, used }>
+// setupCodes: Map<code, { email, config, createdAt, used }>
 const setupCodes = new Map();
+// chatTokens: Map<chatCode, email>  — permanent, used for mobile web chat
+const chatTokens = new Map();
 
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -145,14 +147,16 @@ app.post('/api/setup/generate', requireWebsite, (req, res) => {
   const { email, llmBaseUrl, llmApiKey, llmModel, botToken, chatId } = req.body;
   if (!email) return res.status(400).json({ error: 'email required' });
 
-  // Expire old codes for this email
+  const normalEmail = email.toLowerCase();
+
+  // Expire old setup codes for this email
   for (const [k, v] of setupCodes.entries()) {
-    if (v.email === email.toLowerCase()) setupCodes.delete(k);
+    if (v.email === normalEmail) setupCodes.delete(k);
   }
 
   const code = generateCode();
   setupCodes.set(code, {
-    email:      email.toLowerCase(),
+    email:      normalEmail,
     llmBaseUrl: llmBaseUrl || 'https://api.groq.com/openai/v1',
     llmApiKey:  llmApiKey  || '',
     llmModel:   llmModel   || 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -162,11 +166,21 @@ app.post('/api/setup/generate', requireWebsite, (req, res) => {
     used:       false,
   });
 
-  // Expire after 15 minutes
-  setTimeout(() => setupCodes.delete(code), 15 * 60 * 1000);
+  // Setup code expires after 24 hours (user may need time to install the app)
+  setTimeout(() => setupCodes.delete(code), 24 * 60 * 60 * 1000);
 
-  recordActivity(email, `Setup code generated: ${code}`, 'info');
-  res.json({ ok: true, code });
+  // Also issue a persistent chat token for this email (overwrite old one)
+  let chatCode = null;
+  for (const [k, v] of chatTokens.entries()) {
+    if (v === normalEmail) { chatCode = k; break; }
+  }
+  if (!chatCode) {
+    chatCode = generateCode();
+    chatTokens.set(chatCode, normalEmail);
+  }
+
+  recordActivity(normalEmail, `Setup code generated: ${code}`, 'info');
+  res.json({ ok: true, code, chatCode });
 });
 
 // POST /api/setup/redeem — app calls this with the code
@@ -213,7 +227,7 @@ app.post('/api/admin/setup-code', requireAdmin, (req, res) => {
     used:       false,
   });
 
-  setTimeout(() => setupCodes.delete(code), 15 * 60 * 1000);
+  setTimeout(() => setupCodes.delete(code), 24 * 60 * 60 * 1000);
   recordActivity(email, `Admin generated test code: ${code}`, 'warn');
   res.json({ ok: true, code });
 });
@@ -277,6 +291,35 @@ app.post('/api/relay/activity', requireWebsite, (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/relay/chat-by-code — mobile website chats using persistent chat code (no account login needed)
+app.post('/api/relay/chat-by-code', async (req, res) => {
+  const { code, message, sessionId } = req.body;
+  if (!code || !message) return res.status(400).json({ error: 'code and message required' });
+
+  const email = chatTokens.get(code.toUpperCase().trim());
+  if (!email) return res.status(404).json({ error: 'Invalid code', invalid: true });
+
+  const agent = agents.get(email);
+  if (!agent?.ws || agent.ws.readyState !== WebSocket.OPEN) {
+    return res.status(503).json({ error: 'Agent offline', offline: true });
+  }
+
+  const requestId = crypto.randomUUID();
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingChats.delete(requestId);
+        reject(new Error('timeout'));
+      }, 90_000);
+      pendingChats.set(requestId, { resolve, reject, timer });
+      wsSend(agent.ws, { type: 'chat_request', requestId, message, sessionId: sessionId || null });
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(504).json({ error: err.message });
+  }
+});
+
 // GET /api/relay/agent-status — website checks if a user's agent is online
 app.get('/api/relay/agent-status', requireWebsite, (req, res) => {
   const email = (req.query.email || '').toLowerCase();
@@ -328,6 +371,7 @@ wss.on('connection', (ws, req) => {
           ws,
           agentId:      msg.agentId || crypto.randomUUID(),
           version:      msg.version || '?',
+          os:           msg.os || existing.os || 'unknown',
           connectedAt:  Date.now(),
           lastPing:     Date.now(),
           integrations: msg.integrations || existing.integrations || [],
