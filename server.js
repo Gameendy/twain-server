@@ -220,6 +220,37 @@ app.post('/api/admin/setup-code', requireAdmin, (req, res) => {
 
 // ── Website relay API ─────────────────────────────────────────────────────────
 
+// Pending chat requests: requestId → { resolve, reject, timer }
+const pendingChats = new Map();
+
+// POST /api/relay/chat — website sends a message, hub forwards to agent and waits for reply
+app.post('/api/relay/chat', requireWebsite, async (req, res) => {
+  const { email, message, sessionId } = req.body;
+  if (!email || !message) return res.status(400).json({ error: 'email and message required' });
+
+  const agent = agents.get(email.toLowerCase());
+  if (!agent?.ws || agent.ws.readyState !== WebSocket.OPEN) {
+    return res.status(503).json({ error: 'Agent offline', offline: true });
+  }
+
+  const requestId = crypto.randomUUID();
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingChats.delete(requestId);
+        reject(new Error('timeout'));
+      }, 90_000);
+
+      pendingChats.set(requestId, { resolve, reject, timer });
+      wsSend(agent.ws, { type: 'chat_request', requestId, message, sessionId: sessionId || null });
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(504).json({ error: err.message });
+  }
+});
+
 // POST /api/relay/token — website pushes a new token, we relay to agent
 app.post('/api/relay/token', requireWebsite, (req, res) => {
   const { email, integrationId, token } = req.body;
@@ -333,6 +364,16 @@ wss.on('connection', (ws, req) => {
           adminClients.forEach(res => sendSSE(res, 'agent_update', {
             email: agentEmail, integrations: msg.integrations,
           }));
+        }
+        break;
+      }
+
+      case 'chat_response': {
+        const pending = pendingChats.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingChats.delete(msg.requestId);
+          pending.resolve({ reply: msg.text, sessionId: msg.sessionId });
         }
         break;
       }
